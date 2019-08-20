@@ -28,13 +28,11 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
 import com.firefly.camera2demo.R;
 import com.firefly.camera2demo.base.PermissionBaseActivity;
 
-import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 public class MainActivity extends PermissionBaseActivity implements TextureView.SurfaceTextureListener, View.OnClickListener {
@@ -86,18 +84,21 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 
     }
 
-
     private void initView() {
         btn_switch = findViewById(R.id.btn_switch);
         ttvPreview = findViewById(R.id.ttvPreview);
-        cameraList();
         btn_switch.setOnClickListener(this);
+        cameraList();
+        //监听SurfaceTexture状态,SurfaceTexture可用时回调onSurfaceTextureAvailable方法
         ttvPreview.setSurfaceTextureListener(this);
     }
 
     private void initLooper() {
+        //创建HandlerThread,用"CAMERA2"标记
         mThreadHandler = new HandlerThread("CAMERA2");
+        //启动线程
         mThreadHandler.start();
+        //创建工作线程Handler
         mHandler = new Handler(mThreadHandler.getLooper());
     }
 
@@ -126,7 +127,7 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
     }
 
     /**
-     * 遍历所有摄像头,检查是否可用
+     * 遍历摄像头,检查摄像头是否可用,以及获取摄像头支持的尺寸,FPS等属性
      */
     private void cameraList() {
         //获得所有摄像头的管理者CameraManager
@@ -166,10 +167,10 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
         //获取摄像头支持的所有输出格式和尺寸的管理者StreamConfigurationMap
         StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         //取摄像头支持的预览尺寸
-        mPreviewSize = map.getOutputSizes(SurfaceTexture.class)[0];
+        mPreviewSize = map.getOutputSizes(SurfaceTexture.class)[2];
 
-        //cameraList: mPreviewSize    2816x2112 [15]->208x144(预览模糊)
-        Log.i(TAG, "cameraList: mPreviewSize    " + mPreviewSize.toString());
+        //cameraList: mPreviewSize    [0]->2816x2112  [2]->2160x1064  [15]->208x144(预览模糊)  手机分辨率为2280x1080
+        Log.i(TAG, "cameraList: mPreviewSize    " + map.getOutputSizes(SurfaceTexture.class)[2].toString());
 
     }
 
@@ -199,12 +200,10 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 
         @Override
         public void onDisconnected(CameraDevice cameraDevice) {
-
             if (mCameraDevice != null) {
                 mCameraDevice.close();
                 mCameraDevice = null;
             }
-
         }
 
         @Override
@@ -218,23 +217,21 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 
     private void startPreview(CameraDevice cameraDevice) {
         SurfaceTexture texture = ttvPreview.getSurfaceTexture();
-        //这里设置的就是预览大小
+        //设置的就是预览大小
         texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
         Surface surface = new Surface(texture);
         try {
-            //设置捕获请求模式为预览,也可以设置为拍照,录像
+            //设置捕获请求模式为预览
             mPreviewBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
-
+        //对相机参数进行设置
         setCamera();
-
-///*此处还有很多格式，比如我所用到YUV等*//*最大的图片数，mImageReader里能获取到图片数，但是实际中是2+1张图片，就是多一张*/
+        //图片的大小,格式以及捕捉数量(2+1)
         mImageReader = ImageReader.newInstance(mImageWidth, mImageHeight, ImageFormat.JPEG, 2);
-
         mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mHandler);
-        // 这里一定分别add两个surface，一个TextureView的，一个ImageReader的，如果没add，会造成没摄像头预览，或者没有ImageReader的那个回调！！
+        //添加两个surface，一个TextureView的，另一个ImageReader的,用于页面显示和预览数据回调
         mPreviewBuilder.addTarget(surface);
         mPreviewBuilder.addTarget(mImageReader.getSurface());
         try {
@@ -245,7 +242,6 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 
     }
 
-    //对相机参数进行设置
     private void setCamera() {
         //曝光
         mPreviewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
@@ -260,6 +256,7 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
             mCaptureSession = cameraCaptureSession;
 
             try {
+                //请求捕获图像
                 cameraCaptureSession.setRepeatingRequest(mPreviewBuilder.build(), null, mHandler);
             } catch (CameraAccessException e) {
                 e.printStackTrace();
@@ -278,9 +275,6 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 //        @Override
 //        public void onImageAvailable(ImageReader imageReader) {
 //            Image img = imageReader.acquireNextImage();
-//            /**
-//             *  因为Camera2并没有Camera1的Priview回调！！！所以该怎么能到预览图像的byte[]呢？就是在这里了！！！我找了好久的办法！！！
-//             **/
 //            ByteBuffer buffer = img.getPlanes()[0].getBuffer();
 //            byte[] data = new byte[buffer.remaining()];
 //            buffer.get(data);
@@ -290,10 +284,12 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 //    };
 
     private ImageReader.OnImageAvailableListener mOnImageAvailableListener = (ImageReader imageReader) -> {
+        //从ImageReader队列获取下一个图像
         Image img = imageReader.acquireNextImage();
 //        ByteBuffer buffer = img.getPlanes()[0].getBuffer();
 //        byte[] data = new byte[buffer.remaining()];
 //        buffer.get(data);
+        //注意不用要关闭,否则会报错
         img.close();
 
     };
@@ -321,7 +317,6 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
                         Toast.makeText(this, "摄像头不可用,请检查设备", Toast.LENGTH_SHORT).show();
                         break;
                     }
-
                     if (ttvPreview.isAvailable()) {
                         openCamera(mCameraId);
                     } else {
@@ -343,12 +338,10 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
 
     //释放相机资源
     private void closeCamera() {
-
         if (mCaptureSession != null) {
             mCaptureSession.close();
             mCaptureSession = null;
         }
-
         if (mCameraDevice != null) {
             mCameraDevice.close();
             mCameraDevice = null;
@@ -357,8 +350,6 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
             mImageReader.close();
             mImageReader = null;
         }
-
-
     }
 
 
