@@ -17,6 +17,7 @@ import android.media.Image;
 import android.media.ImageReader;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -32,13 +33,19 @@ import androidx.annotation.RequiresApi;
 
 import com.firefly.camera2demo.R;
 import com.firefly.camera2demo.base.PermissionBaseActivity;
+import com.firefly.camera2demo.utils.SavePhoto;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 
 public class MainActivity extends PermissionBaseActivity implements TextureView.SurfaceTextureListener, View.OnClickListener {
     private String TAG = "MainActivity";
     private TextureView ttvPreview;
     private Button btn_switch;
+    private Button btn_photograph;
     private HandlerThread mThreadHandler;
     private Handler mHandler;
     private Size mPreviewSize;
@@ -48,16 +55,20 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
     private CameraDevice mCameraDevice;
     private CameraCaptureSession mCaptureSession;
 
-    private int mImageWidth = 1920;
-    private int mImageHeight = 1080;
     private String[] mPermissions = new String[]{
-            Manifest.permission.CAMERA};
+            Manifest.permission.CAMERA,
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE};
+
     private String mCameraId;
     private String mFontCameraId;
     private String mBackCameraId;
 
     private CameraManager cameraManager;
     private static Range<Integer>[] FpsRanges;
+    private Integer mCameraOrientation;
+    private Size mPictureSize;
+    private int[] isFocusing;
 
 
     @Override
@@ -81,13 +92,14 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
             initLooper();
         });
 
-
     }
 
     private void initView() {
         btn_switch = findViewById(R.id.btn_switch);
+        btn_photograph = findViewById(R.id.btn_photograph);
         ttvPreview = findViewById(R.id.ttvPreview);
         btn_switch.setOnClickListener(this);
+        btn_photograph.setOnClickListener(this);
         cameraList();
         //监听SurfaceTexture状态,SurfaceTexture可用时回调onSurfaceTextureAvailable方法
         ttvPreview.setSurfaceTextureListener(this);
@@ -141,10 +153,19 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
                 //后置摄像头"0"
                 if (characteristics.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK) {
                     mBackCameraId = cameraId;
+                    //获取摄像头方向(硬件传感器角度)  90
+                    mCameraOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
+                    Log.i(TAG, "cameraList: mCameraOrientation  " + mCameraOrientation);
+
                     //摄像头支持的FPS范围,前后摄像头一样
                     FpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
                     //cameraList: backFpsRanges[[12, 15], [15, 15], [14, 20], [20, 20], [14, 25], [25, 25], [14, 30], [30, 30]]
                     Log.i(TAG, "cameraList: backFpsRanges" + Arrays.toString(FpsRanges));
+
+                    isFocusing = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+                    for (int f : isFocusing) {
+                        Log.i(TAG, "cameraList: isFocusing" + f);
+                    }
                 }
                 //前置摄像头"1"
                 if (characteristics.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT) {
@@ -168,9 +189,13 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
         StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         //取摄像头支持的预览尺寸
         mPreviewSize = map.getOutputSizes(SurfaceTexture.class)[2];
-
         //cameraList: mPreviewSize    [0]->2816x2112  [2]->2160x1064  [15]->208x144(预览模糊)  手机分辨率为2280x1080
-        Log.i(TAG, "cameraList: mPreviewSize    " + map.getOutputSizes(SurfaceTexture.class)[2].toString());
+        Log.i(TAG, "cameraList: mPreviewSize    " + mPreviewSize.toString());
+
+        //摄像头支持的保存图片尺寸 1080  1920
+        mPictureSize = map.getOutputSizes(ImageFormat.JPEG)[9];
+        Log.i(TAG, "cameraList: mPictureSize    " + mPictureSize.getHeight() + " " + mPictureSize.getWidth());
+
 
     }
 
@@ -222,14 +247,15 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
         Surface surface = new Surface(texture);
         try {
             //设置捕获请求模式为预览
-            mPreviewBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            mPreviewBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);//预览
+//            mPreviewBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);//拍照
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
         //对相机参数进行设置
         setCamera();
         //图片的大小,格式以及捕捉数量(2+1)
-        mImageReader = ImageReader.newInstance(mImageWidth, mImageHeight, ImageFormat.JPEG, 2);
+        mImageReader = ImageReader.newInstance(mPictureSize.getWidth(), mPictureSize.getHeight(), ImageFormat.JPEG, 2);
         mImageReader.setOnImageAvailableListener(mOnImageAvailableListener, mHandler);
         //添加两个surface，一个TextureView的，另一个ImageReader的,用于页面显示和预览数据回调
         mPreviewBuilder.addTarget(surface);
@@ -247,6 +273,10 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
         mPreviewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
         //FPS
         mPreviewBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, FpsRanges[5]);
+        //自动对焦
+        mPreviewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+        // 闪光灯
+//        mPreviewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
     }
 
 
@@ -256,8 +286,12 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
             mCaptureSession = cameraCaptureSession;
 
             try {
-                //请求捕获图像
-                cameraCaptureSession.setRepeatingRequest(mPreviewBuilder.build(), null, mHandler);
+                //预览  setRepeatingRequest不断请求捕获图像
+//                cameraCaptureSession.setRepeatingRequest(mPreviewBuilder.build(), null, mHandler);
+
+                //拍照  capture只请求一次捕捉图像
+                mCaptureSession.capture(mPreviewBuilder.build(), null, mHandler);
+
             } catch (CameraAccessException e) {
                 e.printStackTrace();
             }
@@ -286,13 +320,22 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
     private ImageReader.OnImageAvailableListener mOnImageAvailableListener = (ImageReader imageReader) -> {
         //从ImageReader队列获取下一个图像
         Image img = imageReader.acquireNextImage();
-//        ByteBuffer buffer = img.getPlanes()[0].getBuffer();
-//        byte[] data = new byte[buffer.remaining()];
-//        buffer.get(data);
+        //保存图片 :更新相册,照片长宽变形
+        new Thread() {
+            @Override
+            public void run() {
+                super.run();
+                SavePhoto.getSavePhoto().imageSaver(img);
+                img.close();
+                SavePhoto.getSavePhoto().updatePhoto(MainActivity.this);
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "保存成功", Toast.LENGTH_SHORT).show());
+            }
+        }.start();
         //注意不用要关闭,否则会报错
-        img.close();
+
 
     };
+
 
 
     @Override
@@ -330,9 +373,56 @@ public class MainActivity extends PermissionBaseActivity implements TextureView.
                 }
 
                 break;
+
+            case R.id.btn_photograph:
+
+                takePhoto();
+
+                break;
+
             default:
                 break;
 
+        }
+    }
+
+    //拍照
+    private void takePhoto() {
+//            mPreviewBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);//拍照
+
+    }
+
+    public static class imageSaver implements Runnable {
+        private Image mImage;
+        private File mImageFile;
+
+        public imageSaver(Image image) {
+            mImage = image;
+        }
+
+        @Override
+        public void run() {
+            ByteBuffer buffer = mImage.getPlanes()[0].getBuffer();
+            byte[] data = new byte[buffer.remaining()];
+            buffer.get(data);
+            mImageFile = new File(Environment.getExternalStorageDirectory() + "/DCIM/myPicture.jpg");
+            FileOutputStream fos = null;
+            try {
+                fos = new FileOutputStream(mImageFile);
+                fos.write(data, 0, data.length);
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                mImageFile = null;
+                if (fos != null) {
+                    try {
+                        fos.close();
+                        fos = null;
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
         }
     }
 
